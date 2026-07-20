@@ -1,7 +1,7 @@
 using System;
 using System.IO.Ports;
 using System.Windows.Forms;
-using System.Drawing;   // Form1_Load에서 안 쓰면 없어도 되지만, 색 지정 등 대비해 둠
+using System.Drawing;
 
 namespace adsmartcar
 {
@@ -13,11 +13,11 @@ namespace adsmartcar
         public Form1()
         {
             InitializeComponent();
+            port.NewLine = "\n";   // 아두이노 println의 줄바꿈에 맞춤
         }
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            // 지금은 비워둠 (나중에 초기화 코드 자리)
         }
 
         // ---- 연결 / 연결 끊기 ----
@@ -27,12 +27,14 @@ namespace adsmartcar
             {
                 if (!port.IsOpen)
                 {
+                    port.DataReceived += Port_DataReceived;
                     port.Open();
                     lblStatus.Text = "연결됨";
                     btnConnect.Text = "연결 끊기";
                 }
                 else
                 {
+                    port.DataReceived -= Port_DataReceived;
                     port.Close();
                     lblStatus.Text = "연결 안됨";
                     btnConnect.Text = "연결";
@@ -42,6 +44,28 @@ namespace adsmartcar
             {
                 lblStatus.Text = "연결 실패";
                 MessageBox.Show("포트를 열 수 없습니다: " + ex.Message);
+            }
+        }
+
+        // ---- 수신: 아두이노가 데이터 보내면 자동 호출 (별도 스레드에서 실행) ----
+        private void Port_DataReceived(object sender, SerialDataReceivedEventArgs e)
+        {
+            try
+            {
+                string line = port.ReadLine().Trim();
+
+                // UI 컨트롤은 UI 스레드에서만 - Invoke로 넘김
+                lblSensor.Invoke(new Action(() =>
+                {
+                    if (line == "-1")
+                        lblSensor.Text = "거리 : -- cm";
+                    else
+                        lblSensor.Text = "거리 : " + line + " cm";
+                }));
+            }
+            catch
+            {
+                // 연결 끊는 순간 등에 읽기 실패 가능 - 무시
             }
         }
 
