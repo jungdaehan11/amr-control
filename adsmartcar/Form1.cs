@@ -165,20 +165,38 @@ namespace adsmartcar
             }
         }
 
-        // ---- 명령 전송 (아직 기존 g/b/s/l/r 방식) ----
-        private void Send(char cmd)
+        // ---- 명령 CMD 상수 (패킷 규칙표와 일치) ----
+        private const byte CMD_FORWARD = 0x10;
+        private const byte CMD_BACKWARD = 0x11;
+        private const byte CMD_LEFT = 0x12;
+        private const byte CMD_RIGHT = 0x13;
+        private const byte CMD_STOP = 0x14;
+
+        // ---- 명령 패킷 전송 ----
+        // 형식: [STX=0x02][LEN=0x00][CMD][CHK][ETX=0x03]  (명령은 DATA 없음, 5바이트)
+        private void SendCommand(byte cmd)
         {
-            if (port.IsOpen)
-                port.Write(cmd.ToString());
-            else
+            if (!port.IsOpen)
+            {
                 lblStatus.Text = "먼저 연결하세요";
+                return;
+            }
+
+            byte len = 0x00;              // 명령은 DATA 없음
+            byte chk = (byte)(len ^ cmd); // 체크섬 = LEN ^ CMD (DATA 없음)
+
+            byte[] packet = new byte[] { 0x02, len, cmd, chk, 0x03 };
+            port.Write(packet, 0, packet.Length);   // 바이트 배열 그대로 전송
+
+            // 진단: 보낸 패킷을 제목에 표시 (아두이노 수신부 완성되면 삭제)
+            this.Text = $"보냄: {packet[0]:X2} {packet[1]:X2} {packet[2]:X2} {packet[3]:X2} {packet[4]:X2}";
         }
 
-        private void btnForward_Click(object sender, EventArgs e) { Send('g'); }
-        private void btnBackward_Click(object sender, EventArgs e) { Send('b'); }
-        private void btnLeft_Click(object sender, EventArgs e) { Send('l'); }
-        private void btnRight_Click(object sender, EventArgs e) { Send('r'); }
-        private void btnStop_Click(object sender, EventArgs e) { Send('s'); }
-        private void btnEStop_Click(object sender, EventArgs e) { Send('s'); }
+        private void btnForward_Click(object sender, EventArgs e) { SendCommand(CMD_FORWARD); }
+        private void btnBackward_Click(object sender, EventArgs e) { SendCommand(CMD_BACKWARD); }
+        private void btnLeft_Click(object sender, EventArgs e) { SendCommand(CMD_LEFT); }
+        private void btnRight_Click(object sender, EventArgs e) { SendCommand(CMD_RIGHT); }
+        private void btnStop_Click(object sender, EventArgs e) { SendCommand(CMD_STOP); }
+        private void btnEStop_Click(object sender, EventArgs e) { SendCommand(CMD_STOP); }
     }
 }
