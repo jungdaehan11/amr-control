@@ -9,7 +9,7 @@ namespace adsmartcar
 {
     public partial class Form1 : Form
     {
-        private SerialPort port = new SerialPort("COM4", 9600);
+        private SerialPort port = new SerialPort("COM8", 9600);
 
         // ===== 그래프용 데이터 =====
         private Queue<int> distanceData = new Queue<int>();
@@ -188,8 +188,7 @@ namespace adsmartcar
             byte[] packet = new byte[] { 0x02, len, cmd, chk, 0x03 };
             port.Write(packet, 0, packet.Length);   // 바이트 배열 그대로 전송
 
-            // 진단: 보낸 패킷을 제목에 표시 (아두이노 수신부 완성되면 삭제)
-            this.Text = $"보냄: {packet[0]:X2} {packet[1]:X2} {packet[2]:X2} {packet[3]:X2} {packet[4]:X2}";
+           
         }
 
         private void btnForward_Click(object sender, EventArgs e) { SendCommand(CMD_FORWARD); }
