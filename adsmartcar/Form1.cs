@@ -11,6 +11,9 @@ namespace adsmartcar
     {
         private SerialPort port = new SerialPort("COM8", 9600);
 
+        // 하트비트용 타이머 (200ms마다 살아있음 신호)
+        private System.Windows.Forms.Timer heartbeatTimer = new System.Windows.Forms.Timer();
+
         // ===== 그래프용 데이터 =====
         private Queue<int> distanceData = new Queue<int>();
         private const int MAX_POINTS = 100;
@@ -19,7 +22,15 @@ namespace adsmartcar
         private List<byte> packetBuffer = new List<byte>();
         private const byte STX = 0x02;
         private const byte ETX = 0x03;
-        private const int PACKET_SIZE = 6;
+        private const int PACKET_SIZE = 6;   // 거리 패킷 = 6바이트
+
+        // ===== 명령 CMD (패킷 규칙표와 일치) =====
+        private const byte CMD_FORWARD = 0x10;
+        private const byte CMD_BACKWARD = 0x11;
+        private const byte CMD_LEFT = 0x12;
+        private const byte CMD_RIGHT = 0x13;
+        private const byte CMD_STOP = 0x14;
+        private const byte CMD_HEARTBEAT = 0x30;
 
         public Form1()
         {
@@ -30,6 +41,10 @@ namespace adsmartcar
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
                 .SetValue(panel1, true, null);
             panel1.Paint += Panel1_Paint;
+
+            // 하트비트 타이머 설정
+            heartbeatTimer.Interval = 200;               // 200ms 간격
+            heartbeatTimer.Tick += HeartbeatTimer_Tick;
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -45,11 +60,13 @@ namespace adsmartcar
                 {
                     port.DataReceived += Port_DataReceived;
                     port.Open();
+                    heartbeatTimer.Start();      // 연결되면 하트비트 시작
                     lblStatus.Text = "연결됨";
                     btnConnect.Text = "연결 끊기";
                 }
                 else
                 {
+                    heartbeatTimer.Stop();       // 끊으면 하트비트 중지
                     port.DataReceived -= Port_DataReceived;
                     port.Close();
                     lblStatus.Text = "연결 안됨";
@@ -63,7 +80,21 @@ namespace adsmartcar
             }
         }
 
-        // ---- 수신: 생바이트를 읽어서 패킷 조립기로 넘김 (별도 스레드) ----
+        // ---- 하트비트: 200ms마다 자동 전송 ----
+        // 형식: [STX][LEN=0][CMD=0x30][CHK][ETX]  (5바이트)
+        private void HeartbeatTimer_Tick(object sender, EventArgs e)
+        {
+            if (port.IsOpen)
+            {
+                byte len = 0x00;
+                byte cmd = CMD_HEARTBEAT;
+                byte chk = (byte)(len ^ cmd);
+                byte[] packet = new byte[] { 0x02, len, cmd, chk, 0x03 };
+                port.Write(packet, 0, packet.Length);
+            }
+        }
+
+        // ---- 수신: 생바이트 → 패킷 조립기 (별도 스레드) ----
         private void Port_DataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             try
@@ -71,8 +102,6 @@ namespace adsmartcar
                 int n = port.BytesToRead;
                 byte[] buf = new byte[n];
                 port.Read(buf, 0, n);
-
-               
 
                 foreach (byte b in buf)
                     ProcessByte(b);
@@ -118,7 +147,7 @@ namespace adsmartcar
             byte calc = (byte)(len ^ cmd ^ data);
             if (calc != chk) return;
 
-            if (cmd == 0x20)
+            if (cmd == 0x20)   // 거리값 패킷
             {
                 int dist = data;
                 lblSensor.Invoke(new Action(() =>
@@ -165,15 +194,8 @@ namespace adsmartcar
             }
         }
 
-        // ---- 명령 CMD 상수 (패킷 규칙표와 일치) ----
-        private const byte CMD_FORWARD = 0x10;
-        private const byte CMD_BACKWARD = 0x11;
-        private const byte CMD_LEFT = 0x12;
-        private const byte CMD_RIGHT = 0x13;
-        private const byte CMD_STOP = 0x14;
-
         // ---- 명령 패킷 전송 ----
-        // 형식: [STX=0x02][LEN=0x00][CMD][CHK][ETX=0x03]  (명령은 DATA 없음, 5바이트)
+        // 형식: [STX][LEN=0][CMD][CHK][ETX]  (5바이트)
         private void SendCommand(byte cmd)
         {
             if (!port.IsOpen)
@@ -182,13 +204,10 @@ namespace adsmartcar
                 return;
             }
 
-            byte len = 0x00;              // 명령은 DATA 없음
-            byte chk = (byte)(len ^ cmd); // 체크섬 = LEN ^ CMD (DATA 없음)
-
+            byte len = 0x00;
+            byte chk = (byte)(len ^ cmd);
             byte[] packet = new byte[] { 0x02, len, cmd, chk, 0x03 };
-            port.Write(packet, 0, packet.Length);   // 바이트 배열 그대로 전송
-
-           
+            port.Write(packet, 0, packet.Length);
         }
 
         private void btnForward_Click(object sender, EventArgs e) { SendCommand(CMD_FORWARD); }
