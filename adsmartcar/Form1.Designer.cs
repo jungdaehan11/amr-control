@@ -38,6 +38,7 @@
             panel1 = new Panel();
             btnConnect = new Button();
             lblStatus = new Label();
+            btnRecord = new Button();
             SuspendLayout();
             // 
             // btnEStop
@@ -136,11 +137,22 @@
             lblStatus.TabIndex = 9;
             lblStatus.Text = "연결 안됨";
             // 
+            // btnRecord
+            // 
+            btnRecord.Location = new Point(279, 5);
+            btnRecord.Name = "btnRecord";
+            btnRecord.Size = new Size(112, 34);
+            btnRecord.TabIndex = 10;
+            btnRecord.Text = "기록 시작";
+            btnRecord.UseVisualStyleBackColor = true; 
+            btnRecord.Click += btnRecord_Click;
+            // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(10F, 25F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(838, 489);
+            ClientSize = new Size(871, 523);
+            Controls.Add(btnRecord);
             Controls.Add(lblStatus);
             Controls.Add(btnConnect);
             Controls.Add(panel1);
@@ -170,5 +182,6 @@
         private Panel panel1;
         private Button btnConnect;
         private Label lblStatus;
+        private Button btnRecord;
     }
 }

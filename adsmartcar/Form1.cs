@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.IO.Ports;
 using System.Windows.Forms;
 
@@ -12,11 +13,17 @@ namespace adsmartcar
         private SerialPort port = new SerialPort("COM8", 9600);
         private System.Windows.Forms.Timer heartbeatTimer = new System.Windows.Forms.Timer();
 
-        // ===== 그래프 데이터 (전류) =====
+        // ===== 그래프 데이터 =====
         private Queue<int> currentData = new Queue<int>();
         private const int MAX_POINTS = 100;
-
         private int lastDistance = 0;
+
+        // ===== 데이터 로깅 =====
+        private StreamWriter logWriter = null;      // CSV 파일 쓰기
+        private bool isRecording = false;
+        private DateTime recordStartTime;
+        private string lastCommand = "STOP";        // 마지막 명령 (라벨용)
+        private int logCount = 0;                   // 기록된 줄 수
 
         // ===== 패킷 조립 =====
         private List<byte> packetBuffer = new List<byte>();
@@ -45,7 +52,7 @@ namespace adsmartcar
                 .SetValue(panel1, true, null);
             panel1.Paint += Panel1_Paint;
 
-            heartbeatTimer.Interval = 100;      // 200 → 100ms (더 자주 전송)
+            heartbeatTimer.Interval = 100;
             heartbeatTimer.Tick += HeartbeatTimer_Tick;
         }
 
@@ -79,6 +86,73 @@ namespace adsmartcar
             {
                 lblStatus.Text = "연결 실패";
                 MessageBox.Show("포트를 열 수 없습니다: " + ex.Message);
+            }
+        }
+
+        // ===== 기록 시작 / 중지 =====
+        private void btnRecord_Click(object sender, EventArgs e)
+        {
+            if (!isRecording)
+            {
+                try
+                {
+                    // 파일명: log_20260723_162530.csv
+                    string fileName = "log_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".csv";
+                    string path = Path.Combine(Application.StartupPath, fileName);
+
+                    logWriter = new StreamWriter(path, false);
+                    logWriter.WriteLine("elapsed_ms,current_diff,current_A,distance_cm,command");
+
+                    recordStartTime = DateTime.Now;
+                    logCount = 0;
+                    isRecording = true;
+                    btnRecord.Text = "기록 중지";
+
+                    MessageBox.Show("기록 시작\n" + path);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("파일을 만들 수 없습니다: " + ex.Message);
+                }
+            }
+            else
+            {
+                isRecording = false;
+                btnRecord.Text = "기록 시작";
+
+                if (logWriter != null)
+                {
+                    logWriter.Flush();
+                    logWriter.Close();
+                    logWriter = null;
+                }
+
+                MessageBox.Show("기록 완료: " + logCount + "줄 저장됨");
+            }
+        }
+
+        // ===== CSV 한 줄 기록 =====
+        private void WriteLog(int diff)
+        {
+            if (!isRecording || logWriter == null) return;
+
+            try
+            {
+                long elapsed = (long)(DateTime.Now - recordStartTime).TotalMilliseconds;
+                float amps = diff * CURRENT_PER_DIFF;
+
+                logWriter.WriteLine(
+                    elapsed + "," +
+                    diff + "," +
+                    amps.ToString("F3") + "," +
+                    lastDistance + "," +
+                    lastCommand
+                );
+                logCount++;
+            }
+            catch
+            {
+                // 파일 쓰기 실패는 무시 (프로그램 중단 방지)
             }
         }
 
@@ -151,6 +225,9 @@ namespace adsmartcar
             else if (cmd == CMD_CURRENT)
             {
                 int diff = data;
+
+                WriteLog(diff);          // ★ CSV 기록 (전류 패킷 올 때마다)
+
                 lblSensor.Invoke(new Action(() =>
                 {
                     currentData.Enqueue(diff);
@@ -162,7 +239,7 @@ namespace adsmartcar
             }
         }
 
-        // ===== 라벨에 거리 + 전류 표시 =====
+        // ===== 라벨 표시 =====
         private void UpdateLabel()
         {
             int[] arr = currentData.ToArray();
@@ -171,6 +248,7 @@ namespace adsmartcar
 
             string distText = (lastDistance == 0) ? "-- cm" : lastDistance + " cm";
             string text = "거리 : " + distText + "    전류 : " + amps.ToString("F2") + " A";
+            if (isRecording) text += "    [REC " + logCount + "]";
 
             lblSensor.Invoke(new Action(() =>
             {
@@ -206,8 +284,8 @@ namespace adsmartcar
             }
         }
 
-        // ---- 명령 전송 ----
-        private void SendCommand(byte cmd)
+        // ---- 명령 전송 (명령 상태도 기록) ----
+        private void SendCommand(byte cmd, string label)
         {
             if (!port.IsOpen)
             {
@@ -218,13 +296,15 @@ namespace adsmartcar
             byte chk = (byte)(len ^ cmd);
             byte[] packet = new byte[] { 0x02, len, cmd, chk, 0x03 };
             port.Write(packet, 0, packet.Length);
+
+            lastCommand = label;      // 로그용 명령 상태 갱신
         }
 
-        private void btnForward_Click(object sender, EventArgs e) { SendCommand(CMD_FORWARD); }
-        private void btnBackward_Click(object sender, EventArgs e) { SendCommand(CMD_BACKWARD); }
-        private void btnLeft_Click(object sender, EventArgs e) { SendCommand(CMD_LEFT); }
-        private void btnRight_Click(object sender, EventArgs e) { SendCommand(CMD_RIGHT); }
-        private void btnStop_Click(object sender, EventArgs e) { SendCommand(CMD_STOP); }
-        private void btnEStop_Click(object sender, EventArgs e) { SendCommand(CMD_STOP); }
+        private void btnForward_Click(object sender, EventArgs e) { SendCommand(CMD_FORWARD, "FORWARD"); }
+        private void btnBackward_Click(object sender, EventArgs e) { SendCommand(CMD_BACKWARD, "BACKWARD"); }
+        private void btnLeft_Click(object sender, EventArgs e) { SendCommand(CMD_LEFT, "LEFT"); }
+        private void btnRight_Click(object sender, EventArgs e) { SendCommand(CMD_RIGHT, "RIGHT"); }
+        private void btnStop_Click(object sender, EventArgs e) { SendCommand(CMD_STOP, "STOP"); }
+        private void btnEStop_Click(object sender, EventArgs e) { SendCommand(CMD_STOP, "ESTOP"); }
     }
 }
