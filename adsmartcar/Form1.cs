@@ -12,11 +12,10 @@ namespace adsmartcar
         private SerialPort port = new SerialPort("COM8", 9600);
         private System.Windows.Forms.Timer heartbeatTimer = new System.Windows.Forms.Timer();
 
-        // ===== 그래프 데이터 (전류만) =====
+        // ===== 그래프 데이터 (전류) =====
         private Queue<int> currentData = new Queue<int>();
         private const int MAX_POINTS = 100;
 
-        // 최근 거리값 (라벨 표시용)
         private int lastDistance = 0;
 
         // ===== 패킷 조립 =====
@@ -35,7 +34,6 @@ namespace adsmartcar
         private const byte CMD_CURRENT = 0x21;
         private const byte CMD_HEARTBEAT = 0x30;
 
-        // 전류 환산: diff 1당 약 0.0489A
         private const float CURRENT_PER_DIFF = 0.0489f;
 
         public Form1()
@@ -47,7 +45,7 @@ namespace adsmartcar
                 .SetValue(panel1, true, null);
             panel1.Paint += Panel1_Paint;
 
-            heartbeatTimer.Interval = 200;
+            heartbeatTimer.Interval = 100;      // 200 → 100ms (더 자주 전송)
             heartbeatTimer.Tick += HeartbeatTimer_Tick;
         }
 
@@ -164,10 +162,11 @@ namespace adsmartcar
             }
         }
 
-        // ===== 라벨에 거리 + 전류 함께 표시 =====
+        // ===== 라벨에 거리 + 전류 표시 =====
         private void UpdateLabel()
         {
-            int diff = currentData.Count > 0 ? currentData.ToArray()[currentData.Count - 1] : 0;
+            int[] arr = currentData.ToArray();
+            int diff = arr.Length > 0 ? arr[arr.Length - 1] : 0;
             float amps = diff * CURRENT_PER_DIFF;
 
             string distText = (lastDistance == 0) ? "-- cm" : lastDistance + " cm";
@@ -191,7 +190,7 @@ namespace adsmartcar
             if (currentData.Count < 2) return;
 
             int[] arr = currentData.ToArray();
-            int maxValue = 80;                     // diff 스케일 (0~80)
+            int maxValue = 80;
             float xStep = (float)w / (MAX_POINTS - 1);
 
             using (Pen pen = new Pen(Color.OrangeRed, 2))
