@@ -10,40 +10,44 @@ namespace adsmartcar
     public partial class Form1 : Form
     {
         private SerialPort port = new SerialPort("COM8", 9600);
-
-        // 하트비트용 타이머 (200ms마다 살아있음 신호)
         private System.Windows.Forms.Timer heartbeatTimer = new System.Windows.Forms.Timer();
 
-        // ===== 그래프용 데이터 =====
-        private Queue<int> distanceData = new Queue<int>();
+        // ===== 그래프 데이터 (전류만) =====
+        private Queue<int> currentData = new Queue<int>();
         private const int MAX_POINTS = 100;
 
-        // ===== 패킷 조립용 버퍼 =====
+        // 최근 거리값 (라벨 표시용)
+        private int lastDistance = 0;
+
+        // ===== 패킷 조립 =====
         private List<byte> packetBuffer = new List<byte>();
         private const byte STX = 0x02;
         private const byte ETX = 0x03;
-        private const int PACKET_SIZE = 6;   // 거리 패킷 = 6바이트
+        private const int PACKET_SIZE = 6;
 
-        // ===== 명령 CMD (패킷 규칙표와 일치) =====
+        // ===== CMD =====
         private const byte CMD_FORWARD = 0x10;
         private const byte CMD_BACKWARD = 0x11;
         private const byte CMD_LEFT = 0x12;
         private const byte CMD_RIGHT = 0x13;
         private const byte CMD_STOP = 0x14;
+        private const byte CMD_DISTANCE = 0x20;
+        private const byte CMD_CURRENT = 0x21;
         private const byte CMD_HEARTBEAT = 0x30;
+
+        // 전류 환산: diff 1당 약 0.0489A
+        private const float CURRENT_PER_DIFF = 0.0489f;
 
         public Form1()
         {
             InitializeComponent();
 
-            // 그래프 더블버퍼링
             typeof(Panel).GetProperty("DoubleBuffered",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
                 .SetValue(panel1, true, null);
             panel1.Paint += Panel1_Paint;
 
-            // 하트비트 타이머 설정
-            heartbeatTimer.Interval = 200;               // 200ms 간격
+            heartbeatTimer.Interval = 200;
             heartbeatTimer.Tick += HeartbeatTimer_Tick;
         }
 
@@ -51,7 +55,7 @@ namespace adsmartcar
         {
         }
 
-        // ---- 연결 / 연결 끊기 ----
+        // ---- 연결 / 해제 ----
         private void btnConnect_Click(object sender, EventArgs e)
         {
             try
@@ -60,13 +64,13 @@ namespace adsmartcar
                 {
                     port.DataReceived += Port_DataReceived;
                     port.Open();
-                    heartbeatTimer.Start();      // 연결되면 하트비트 시작
+                    heartbeatTimer.Start();
                     lblStatus.Text = "연결됨";
                     btnConnect.Text = "연결 끊기";
                 }
                 else
                 {
-                    heartbeatTimer.Stop();       // 끊으면 하트비트 중지
+                    heartbeatTimer.Stop();
                     port.DataReceived -= Port_DataReceived;
                     port.Close();
                     lblStatus.Text = "연결 안됨";
@@ -80,8 +84,7 @@ namespace adsmartcar
             }
         }
 
-        // ---- 하트비트: 200ms마다 자동 전송 ----
-        // 형식: [STX][LEN=0][CMD=0x30][CHK][ETX]  (5바이트)
+        // ---- 하트비트 ----
         private void HeartbeatTimer_Tick(object sender, EventArgs e)
         {
             if (port.IsOpen)
@@ -94,7 +97,7 @@ namespace adsmartcar
             }
         }
 
-        // ---- 수신: 생바이트 → 패킷 조립기 (별도 스레드) ----
+        // ---- 수신 ----
         private void Port_DataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             try
@@ -102,7 +105,6 @@ namespace adsmartcar
                 int n = port.BytesToRead;
                 byte[] buf = new byte[n];
                 port.Read(buf, 0, n);
-
                 foreach (byte b in buf)
                     ProcessByte(b);
             }
@@ -120,9 +122,7 @@ namespace adsmartcar
                 packetBuffer.Add(b);
                 return;
             }
-
-            if (packetBuffer.Count == 0)
-                return;
+            if (packetBuffer.Count == 0) return;
 
             packetBuffer.Add(b);
 
@@ -133,7 +133,7 @@ namespace adsmartcar
             }
         }
 
-        // ===== 패킷 검증 후 사용 =====
+        // ===== 패킷 검증 후 처리 =====
         private void ValidateAndUse(byte[] p)
         {
             byte len = p[1];
@@ -143,30 +143,43 @@ namespace adsmartcar
             byte etx = p[5];
 
             if (etx != ETX) return;
+            if ((byte)(len ^ cmd ^ data) != chk) return;
 
-            byte calc = (byte)(len ^ cmd ^ data);
-            if (calc != chk) return;
-
-            if (cmd == 0x20)   // 거리값 패킷
+            if (cmd == CMD_DISTANCE)
             {
-                int dist = data;
+                lastDistance = data;
+                UpdateLabel();
+            }
+            else if (cmd == CMD_CURRENT)
+            {
+                int diff = data;
                 lblSensor.Invoke(new Action(() =>
                 {
-                    if (dist == 0)
-                        lblSensor.Text = "거리 : -- cm";
-                    else
-                    {
-                        lblSensor.Text = "거리 : " + dist + " cm";
-                        distanceData.Enqueue(dist);
-                        while (distanceData.Count > MAX_POINTS)
-                            distanceData.Dequeue();
-                        panel1.Invalidate();
-                    }
+                    currentData.Enqueue(diff);
+                    while (currentData.Count > MAX_POINTS)
+                        currentData.Dequeue();
+                    panel1.Invalidate();
                 }));
+                UpdateLabel();
             }
         }
 
-        // ===== 그래프 그리기 =====
+        // ===== 라벨에 거리 + 전류 함께 표시 =====
+        private void UpdateLabel()
+        {
+            int diff = currentData.Count > 0 ? currentData.ToArray()[currentData.Count - 1] : 0;
+            float amps = diff * CURRENT_PER_DIFF;
+
+            string distText = (lastDistance == 0) ? "-- cm" : lastDistance + " cm";
+            string text = "거리 : " + distText + "    전류 : " + amps.ToString("F2") + " A";
+
+            lblSensor.Invoke(new Action(() =>
+            {
+                lblSensor.Text = text;
+            }));
+        }
+
+        // ===== 전류 그래프 =====
         private void Panel1_Paint(object sender, PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -175,27 +188,26 @@ namespace adsmartcar
             int w = panel1.Width;
             int h = panel1.Height;
 
-            if (distanceData.Count < 2) return;
+            if (currentData.Count < 2) return;
 
-            int[] data = distanceData.ToArray();
-            int maxCm = 100;
+            int[] arr = currentData.ToArray();
+            int maxValue = 80;                     // diff 스케일 (0~80)
             float xStep = (float)w / (MAX_POINTS - 1);
 
-            using (Pen pen = new Pen(Color.LimeGreen, 2))
+            using (Pen pen = new Pen(Color.OrangeRed, 2))
             {
-                for (int i = 0; i < data.Length - 1; i++)
+                for (int i = 0; i < arr.Length - 1; i++)
                 {
                     float x1 = i * xStep;
-                    float y1 = h - (data[i] / (float)maxCm * h);
+                    float y1 = h - (arr[i] / (float)maxValue * h);
                     float x2 = (i + 1) * xStep;
-                    float y2 = h - (data[i + 1] / (float)maxCm * h);
+                    float y2 = h - (arr[i + 1] / (float)maxValue * h);
                     g.DrawLine(pen, x1, y1, x2, y2);
                 }
             }
         }
 
-        // ---- 명령 패킷 전송 ----
-        // 형식: [STX][LEN=0][CMD][CHK][ETX]  (5바이트)
+        // ---- 명령 전송 ----
         private void SendCommand(byte cmd)
         {
             if (!port.IsOpen)
@@ -203,7 +215,6 @@ namespace adsmartcar
                 lblStatus.Text = "먼저 연결하세요";
                 return;
             }
-
             byte len = 0x00;
             byte chk = (byte)(len ^ cmd);
             byte[] packet = new byte[] { 0x02, len, cmd, chk, 0x03 };
