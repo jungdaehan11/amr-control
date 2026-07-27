@@ -39,6 +39,7 @@
             btnConnect = new Button();
             lblStatus = new Label();
             btnRecord = new Button();
+            lblAnomaly = new Label();
             SuspendLayout();
             // 
             // btnEStop
@@ -144,14 +145,24 @@
             btnRecord.Size = new Size(112, 34);
             btnRecord.TabIndex = 10;
             btnRecord.Text = "기록 시작";
-            btnRecord.UseVisualStyleBackColor = true; 
+            btnRecord.UseVisualStyleBackColor = true;
             btnRecord.Click += btnRecord_Click;
+            // 
+            // lblAnomaly
+            // 
+            lblAnomaly.AutoSize = true;
+            lblAnomaly.Location = new Point(417, 104);
+            lblAnomaly.Name = "lblAnomaly";
+            lblAnomaly.Size = new Size(78, 25);
+            lblAnomaly.TabIndex = 11;
+            lblAnomaly.Text = "상태 : --";
             // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(10F, 25F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(871, 523);
+            Controls.Add(lblAnomaly);
             Controls.Add(btnRecord);
             Controls.Add(lblStatus);
             Controls.Add(btnConnect);
@@ -183,5 +194,6 @@
         private Button btnConnect;
         private Label lblStatus;
         private Button btnRecord;
+        private Label lblAnomaly;
     }
 }

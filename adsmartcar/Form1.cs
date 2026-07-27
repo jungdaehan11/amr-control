@@ -1,9 +1,10 @@
-using System;
+ï»¿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.IO.Ports;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace adsmartcar
@@ -13,19 +14,25 @@ namespace adsmartcar
         private SerialPort port = new SerialPort("COM8", 9600);
         private System.Windows.Forms.Timer heartbeatTimer = new System.Windows.Forms.Timer();
 
-        // ===== ±×·¡ÇÁ µ¥ÀÌÅÍ =====
+        // ===== ê·¸ë˜í”„ ë°ì´í„° =====
         private Queue<int> currentData = new Queue<int>();
         private const int MAX_POINTS = 100;
         private int lastDistance = 0;
 
-        // ===== µ¥ÀÌÅÍ ·Î±ë =====
+        // ===== ì´ìƒ ê°ì§€ =====
+        private Queue<int> anomalyWindow = new Queue<int>();  // ì´ë™í‰ê· ìš© ìµœê·¼ê°’
+        private const int WINDOW_SIZE = 20;                   // ìµœê·¼ 20ê°œ (ì•½ 2ì´ˆ)
+        private const float ANOMALY_THRESHOLD = 9.5f;        // ì´ë™í‰ê·  9.5 ì´ˆê³¼ ì‹œ ê²½ê³ 
+        private bool isDriving = false;                       // ì£¼í–‰ ì¤‘ ì—¬ë¶€
+
+        // ===== ë°ì´í„° ë¡œê¹… =====
         private StreamWriter logWriter = null;
         private bool isRecording = false;
         private DateTime recordStartTime;
         private string lastCommand = "STOP";
         private int logCount = 0;
 
-        // ===== ÆĞÅ¶ Á¶¸³ =====
+        // ===== íŒ¨í‚· ì¡°ë¦½ =====
         private List<byte> packetBuffer = new List<byte>();
         private const byte STX = 0x02;
         private const byte ETX = 0x03;
@@ -60,7 +67,7 @@ namespace adsmartcar
         {
         }
 
-        // ---- ¿¬°á / ÇØÁ¦ ----
+        // ---- ì—°ê²° / í•´ì œ ----
         private void btnConnect_Click(object sender, EventArgs e)
         {
             try
@@ -70,26 +77,26 @@ namespace adsmartcar
                     port.DataReceived += Port_DataReceived;
                     port.Open();
                     heartbeatTimer.Start();
-                    lblStatus.Text = "¿¬°áµÊ";
-                    btnConnect.Text = "¿¬°á ²÷±â";
+                    lblStatus.Text = "ì—°ê²°ë¨";
+                    btnConnect.Text = "ì—°ê²° ëŠê¸°";
                 }
                 else
                 {
                     heartbeatTimer.Stop();
                     port.DataReceived -= Port_DataReceived;
                     port.Close();
-                    lblStatus.Text = "¿¬°á ¾ÈµÊ";
-                    btnConnect.Text = "¿¬°á";
+                    lblStatus.Text = "ì—°ê²° ì•ˆë¨";
+                    btnConnect.Text = "ì—°ê²°";
                 }
             }
             catch (Exception ex)
             {
-                lblStatus.Text = "¿¬°á ½ÇÆĞ";
-                MessageBox.Show("Æ÷Æ®¸¦ ¿­ ¼ö ¾ø½À´Ï´Ù: " + ex.Message);
+                lblStatus.Text = "ì—°ê²° ì‹¤íŒ¨";
+                MessageBox.Show("í¬íŠ¸ë¥¼ ì—´ ìˆ˜ ì—†ìŠµë‹ˆë‹¤: " + ex.Message);
             }
         }
 
-        // ===== ±â·Ï ½ÃÀÛ / ÁßÁö =====
+        // ===== ê¸°ë¡ ì‹œì‘ / ì¤‘ì§€ =====
         private void btnRecord_Click(object sender, EventArgs e)
         {
             if (!isRecording)
@@ -105,19 +112,19 @@ namespace adsmartcar
                     recordStartTime = DateTime.Now;
                     logCount = 0;
                     isRecording = true;
-                    btnRecord.Text = "±â·Ï ÁßÁö";
+                    btnRecord.Text = "ê¸°ë¡ ì¤‘ì§€";
 
-                    MessageBox.Show("±â·Ï ½ÃÀÛ\n" + path);
+                    MessageBox.Show("ê¸°ë¡ ì‹œì‘\n" + path);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show("ÆÄÀÏÀ» ¸¸µé ¼ö ¾ø½À´Ï´Ù: " + ex.Message);
+                    MessageBox.Show("íŒŒì¼ì„ ë§Œë“¤ ìˆ˜ ì—†ìŠµë‹ˆë‹¤: " + ex.Message);
                 }
             }
             else
             {
                 isRecording = false;
-                btnRecord.Text = "±â·Ï ½ÃÀÛ";
+                btnRecord.Text = "ê¸°ë¡ ì‹œì‘";
 
                 if (logWriter != null)
                 {
@@ -126,35 +133,24 @@ namespace adsmartcar
                     logWriter = null;
                 }
 
-                MessageBox.Show("±â·Ï ¿Ï·á: " + logCount + "ÁÙ ÀúÀåµÊ");
+                MessageBox.Show("ê¸°ë¡ ì™„ë£Œ: " + logCount + "ì¤„ ì €ì¥ë¨");
             }
         }
 
-        // ===== CSV ÇÑ ÁÙ ±â·Ï =====
         private void WriteLog(int diff)
         {
             if (!isRecording || logWriter == null) return;
-
             try
             {
                 long elapsed = (long)(DateTime.Now - recordStartTime).TotalMilliseconds;
                 float amps = diff * CURRENT_PER_DIFF;
-
-                logWriter.WriteLine(
-                    elapsed + "," +
-                    diff + "," +
-                    amps.ToString("F3") + "," +
-                    lastDistance + "," +
-                    lastCommand
-                );
+                logWriter.WriteLine(elapsed + "," + diff + "," + amps.ToString("F3") + "," + lastDistance + "," + lastCommand);
                 logCount++;
             }
-            catch
-            {
-            }
+            catch { }
         }
 
-        // ---- ÇÏÆ®ºñÆ® ----
+        // ---- í•˜íŠ¸ë¹„íŠ¸ ----
         private void HeartbeatTimer_Tick(object sender, EventArgs e)
         {
             if (port.IsOpen)
@@ -167,7 +163,7 @@ namespace adsmartcar
             }
         }
 
-        // ---- ¼ö½Å ----
+        // ---- ìˆ˜ì‹  ----
         private void Port_DataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             try
@@ -178,12 +174,9 @@ namespace adsmartcar
                 foreach (byte b in buf)
                     ProcessByte(b);
             }
-            catch
-            {
-            }
+            catch { }
         }
 
-        // ===== ÆĞÅ¶ Á¶¸³±â =====
         private void ProcessByte(byte b)
         {
             if (b == STX)
@@ -203,7 +196,6 @@ namespace adsmartcar
             }
         }
 
-        // ===== ÆĞÅ¶ °ËÁõ ÈÄ Ã³¸® =====
         private void ValidateAndUse(byte[] p)
         {
             byte len = p[1];
@@ -225,6 +217,7 @@ namespace adsmartcar
                 int diff = data;
 
                 WriteLog(diff);
+                CheckAnomaly(diff);      // â˜… ì´ìƒ ê°ì§€
 
                 lblSensor.Invoke(new Action(() =>
                 {
@@ -237,7 +230,50 @@ namespace adsmartcar
             }
         }
 
-        // ===== ¶óº§ Ç¥½Ã =====
+        // ===== ì´ìƒ ê°ì§€ (ì´ë™í‰ê·  ê¸°ë°˜) =====
+        private void CheckAnomaly(int diff)
+        {
+            // ìµœê·¼ 20ê°œ ìœ ì§€
+            anomalyWindow.Enqueue(diff);
+            while (anomalyWindow.Count > WINDOW_SIZE)
+                anomalyWindow.Dequeue();
+
+            // ì£¼í–‰ ì¤‘ì´ ì•„ë‹ˆë©´ íŒë‹¨ ì•ˆ í•¨
+            isDriving = (lastCommand == "FORWARD" || lastCommand == "BACKWARD" ||
+                         lastCommand == "LEFT" || lastCommand == "RIGHT");
+
+            lblAnomaly.Invoke(new Action(() =>
+            {
+                if (!isDriving)
+                {
+                    lblAnomaly.Text = "ìƒíƒœ : ì •ì§€";
+                    lblAnomaly.ForeColor = Color.Gray;
+                    return;
+                }
+
+                // ë°ì´í„°ê°€ ì¶©ë¶„íˆ ìŒ“ì˜€ì„ ë•Œë§Œ íŒë‹¨
+                if (anomalyWindow.Count < WINDOW_SIZE)
+                {
+                    lblAnomaly.Text = "ìƒíƒœ : ì¸¡ì • ì¤‘...";
+                    lblAnomaly.ForeColor = Color.Gray;
+                    return;
+                }
+
+                float avg = (float)anomalyWindow.Average();
+
+                if (avg > ANOMALY_THRESHOLD)
+                {
+                    lblAnomaly.Text = "ìƒíƒœ : âš  ì´ìƒ ë¶€í•˜ (í‰ê·  " + avg.ToString("F1") + ")";
+                    lblAnomaly.ForeColor = Color.Red;
+                }
+                else
+                {
+                    lblAnomaly.Text = "ìƒíƒœ : ì •ìƒ (í‰ê·  " + avg.ToString("F1") + ")";
+                    lblAnomaly.ForeColor = Color.Green;
+                }
+            }));
+        }
+
         private void UpdateLabel()
         {
             int[] arr = currentData.ToArray();
@@ -245,7 +281,7 @@ namespace adsmartcar
             float amps = diff * CURRENT_PER_DIFF;
 
             string distText = (lastDistance == 0) ? "-- cm" : lastDistance + " cm";
-            string text = "°Å¸® : " + distText + "    Àü·ù : " + amps.ToString("F2") + " A";
+            string text = "ê±°ë¦¬ : " + distText + "    ì „ë¥˜ : " + amps.ToString("F2") + " A";
             if (isRecording) text += "    [REC " + logCount + "]";
 
             lblSensor.Invoke(new Action(() =>
@@ -254,7 +290,6 @@ namespace adsmartcar
             }));
         }
 
-        // ===== Àü·ù ±×·¡ÇÁ =====
         private void Panel1_Paint(object sender, PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -282,12 +317,12 @@ namespace adsmartcar
             }
         }
 
-        // ---- ¸í·É Àü¼Û ----
+        // ---- ëª…ë ¹ ì „ì†¡ ----
         private void SendCommand(byte cmd, string label)
         {
             if (!port.IsOpen)
             {
-                lblStatus.Text = "¸ÕÀú ¿¬°áÇÏ¼¼¿ä";
+                lblStatus.Text = "ë¨¼ì € ì—°ê²°í•˜ì„¸ìš”";
                 return;
             }
             byte len = 0x00;
