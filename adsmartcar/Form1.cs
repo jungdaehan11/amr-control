@@ -19,11 +19,11 @@ namespace adsmartcar
         private int lastDistance = 0;
 
         // ===== 데이터 로깅 =====
-        private StreamWriter logWriter = null;      // CSV 파일 쓰기
+        private StreamWriter logWriter = null;
         private bool isRecording = false;
         private DateTime recordStartTime;
-        private string lastCommand = "STOP";        // 마지막 명령 (라벨용)
-        private int logCount = 0;                   // 기록된 줄 수
+        private string lastCommand = "STOP";
+        private int logCount = 0;
 
         // ===== 패킷 조립 =====
         private List<byte> packetBuffer = new List<byte>();
@@ -96,7 +96,6 @@ namespace adsmartcar
             {
                 try
                 {
-                    // 파일명: log_20260723_162530.csv
                     string fileName = "log_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".csv";
                     string path = Path.Combine(Application.StartupPath, fileName);
 
@@ -152,7 +151,6 @@ namespace adsmartcar
             }
             catch
             {
-                // 파일 쓰기 실패는 무시 (프로그램 중단 방지)
             }
         }
 
@@ -226,7 +224,7 @@ namespace adsmartcar
             {
                 int diff = data;
 
-                WriteLog(diff);          // ★ CSV 기록 (전류 패킷 올 때마다)
+                WriteLog(diff);
 
                 lblSensor.Invoke(new Action(() =>
                 {
@@ -284,7 +282,7 @@ namespace adsmartcar
             }
         }
 
-        // ---- 명령 전송 (명령 상태도 기록) ----
+        // ---- 명령 전송 ----
         private void SendCommand(byte cmd, string label)
         {
             if (!port.IsOpen)
@@ -297,7 +295,7 @@ namespace adsmartcar
             byte[] packet = new byte[] { 0x02, len, cmd, chk, 0x03 };
             port.Write(packet, 0, packet.Length);
 
-            lastCommand = label;      // 로그용 명령 상태 갱신
+            lastCommand = label;
         }
 
         private void btnForward_Click(object sender, EventArgs e) { SendCommand(CMD_FORWARD, "FORWARD"); }
