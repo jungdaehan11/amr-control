@@ -4,42 +4,47 @@ import os
 
 base = os.path.dirname(os.path.abspath(__file__))
 
-# 정상 직진 / 부하 직진 데이터 읽기
+# 세 가지 데이터 읽기
 normal = pd.read_csv(os.path.join(base, "data", "forward.csv"))
 load   = pd.read_csv(os.path.join(base, "data", "forward_load.csv"))
+debris = pd.read_csv(os.path.join(base, "data", "forward_debris.csv"))
 
-# 주행(FORWARD) 구간만 뽑기 - 정지 구간 제외
-normal_fwd = normal[normal["command"] == "FORWARD"]["current_diff"]
-load_fwd   = load[load["command"] == "FORWARD"]["current_diff"]
+# 주행(FORWARD) 구간만
+n_fwd = normal[normal["command"] == "FORWARD"]["current_diff"]
+l_fwd = load[load["command"] == "FORWARD"]["current_diff"]
+d_fwd = debris[debris["command"] == "FORWARD"]["current_diff"]
 
 # ===== 통계 비교 =====
-print("=== 정상 직진 (FORWARD만) ===")
-print(f"평균: {normal_fwd.mean():.2f}   표준편차: {normal_fwd.std():.2f}   최대: {normal_fwd.max()}")
+print("=== FORWARD 구간 통계 비교 ===")
+print(f"{'상태':<10}{'평균':>8}{'표준편차':>10}{'최소':>6}{'최대':>6}")
+print(f"{'정상':<10}{n_fwd.mean():>8.2f}{n_fwd.std():>10.2f}{n_fwd.min():>6}{n_fwd.max():>6}")
+print(f"{'부하(무게)':<10}{l_fwd.mean():>8.2f}{l_fwd.std():>10.2f}{l_fwd.min():>6}{l_fwd.max():>6}")
+print(f"{'이물질(테이프)':<10}{d_fwd.mean():>8.2f}{d_fwd.std():>10.2f}{d_fwd.min():>6}{d_fwd.max():>6}")
 
-print("\n=== 부하 직진 (FORWARD만) ===")
-print(f"평균: {load_fwd.mean():.2f}   표준편차: {load_fwd.std():.2f}   최대: {load_fwd.max()}")
+# ===== 그래프 =====
+plt.figure(figsize=(12, 8))
 
-# ===== 그래프: 두 파형 겹쳐 그리기 =====
-plt.figure(figsize=(12, 6))
-
-# 위쪽: 시계열 파형 비교
-plt.subplot(2, 1, 1)
+# 1. 시계열 파형 (셋 다)
+plt.subplot(3, 1, 1)
 plt.plot(normal["elapsed_ms"]/1000, normal["current_diff"], color="green", linewidth=1, label="Normal")
-plt.plot(load["elapsed_ms"]/1000, load["current_diff"], color="red", linewidth=1, alpha=0.7, label="Load")
-plt.title("Normal vs Load - Current Waveform")
-plt.xlabel("Time (s)")
+plt.title("Normal - Waveform")
 plt.ylabel("Current diff")
-plt.legend()
+plt.ylim(0, 25)
 plt.grid(True, alpha=0.3)
 
-# 아래쪽: 분포 히스토그램 비교 (주행 구간만)
-plt.subplot(2, 1, 2)
-plt.hist(normal_fwd, bins=20, color="green", alpha=0.5, label="Normal (FORWARD)")
-plt.hist(load_fwd, bins=20, color="red", alpha=0.5, label="Load (FORWARD)")
-plt.title("Current Distribution (FORWARD only)")
-plt.xlabel("Current diff")
-plt.ylabel("Count")
-plt.legend()
+plt.subplot(3, 1, 2)
+plt.plot(load["elapsed_ms"]/1000, load["current_diff"], color="blue", linewidth=1, label="Load")
+plt.title("Load (weight) - Waveform")
+plt.ylabel("Current diff")
+plt.ylim(0, 25)
+plt.grid(True, alpha=0.3)
+
+plt.subplot(3, 1, 3)
+plt.plot(debris["elapsed_ms"]/1000, debris["current_diff"], color="red", linewidth=1, label="Debris")
+plt.title("Debris (tape) - Waveform")
+plt.xlabel("Time (s)")
+plt.ylabel("Current diff")
+plt.ylim(0, 25)
 plt.grid(True, alpha=0.3)
 
 plt.tight_layout()

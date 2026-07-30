@@ -20,10 +20,10 @@ namespace adsmartcar
         private int lastDistance = 0;
 
         // ===== 이상 감지 =====
-        private Queue<int> anomalyWindow = new Queue<int>();  // 이동평균용 최근값
-        private const int WINDOW_SIZE = 20;                   // 최근 20개 (약 2초)
-        private const float ANOMALY_THRESHOLD = 9.5f;        // 이동평균 9.5 초과 시 경고
-        private bool isDriving = false;                       // 주행 중 여부
+        private Queue<int> anomalyWindow = new Queue<int>();
+        private const int WINDOW_SIZE = 20;
+        private const float ANOMALY_THRESHOLD = 9.5f;
+        private bool isDriving = false;
 
         // ===== 데이터 로깅 =====
         private StreamWriter logWriter = null;
@@ -217,7 +217,7 @@ namespace adsmartcar
                 int diff = data;
 
                 WriteLog(diff);
-                CheckAnomaly(diff);      // ★ 이상 감지
+                CheckAnomaly(diff);
 
                 lblSensor.Invoke(new Action(() =>
                 {
@@ -230,15 +230,13 @@ namespace adsmartcar
             }
         }
 
-        // ===== 이상 감지 (이동평균 기반) =====
+        // ===== 이상 감지 + 유형 진단 (평균 + 표준편차) =====
         private void CheckAnomaly(int diff)
         {
-            // 최근 20개 유지
             anomalyWindow.Enqueue(diff);
             while (anomalyWindow.Count > WINDOW_SIZE)
                 anomalyWindow.Dequeue();
 
-            // 주행 중이 아니면 판단 안 함
             isDriving = (lastCommand == "FORWARD" || lastCommand == "BACKWARD" ||
                          lastCommand == "LEFT" || lastCommand == "RIGHT");
 
@@ -251,7 +249,6 @@ namespace adsmartcar
                     return;
                 }
 
-                // 데이터가 충분히 쌓였을 때만 판단
                 if (anomalyWindow.Count < WINDOW_SIZE)
                 {
                     lblAnomaly.Text = "상태 : 측정 중...";
@@ -259,17 +256,26 @@ namespace adsmartcar
                     return;
                 }
 
-                float avg = (float)anomalyWindow.Average();
+                // 평균과 표준편차 계산
+                double avg = anomalyWindow.Average();
+                double variance = anomalyWindow.Select(x => (x - avg) * (x - avg)).Average();
+                double std = Math.Sqrt(variance);
 
-                if (avg > ANOMALY_THRESHOLD)
+                // 진단
+                if (avg <= ANOMALY_THRESHOLD)   // 정상
                 {
-                    lblAnomaly.Text = "상태 : ⚠ 이상 부하 (평균 " + avg.ToString("F1") + ")";
+                    lblAnomaly.Text = $"상태 : 정상 (평균 {avg:F1}, 변동 {std:F1})";
+                    lblAnomaly.ForeColor = Color.Green;
+                }
+                else if (avg > 12.0 || std >= 2.8)   // 이물질/마찰
+                {
+                    lblAnomaly.Text = $"상태 : ⚠ 이물질/마찰 의심 (평균 {avg:F1}, 변동 {std:F1})";
                     lblAnomaly.ForeColor = Color.Red;
                 }
-                else
+                else   // 부하
                 {
-                    lblAnomaly.Text = "상태 : 정상 (평균 " + avg.ToString("F1") + ")";
-                    lblAnomaly.ForeColor = Color.Green;
+                    lblAnomaly.Text = $"상태 : ⚠ 부하 이상 (평균 {avg:F1}, 변동 {std:F1})";
+                    lblAnomaly.ForeColor = Color.DarkOrange;
                 }
             }));
         }
