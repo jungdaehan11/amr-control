@@ -27,7 +27,7 @@ namespace adsmartcar
 
         // ===== 이물질 지속 감지 → 서보 경고 =====
         private int debrisCount = 0;                 // 이물질 연속 감지 횟수
-        private const int DEBRIS_TRIGGER = 20;       // 30회(약 3초) 지속 시 경고
+        private const int DEBRIS_TRIGGER = 20;       // 20회(약 2초) 지속 시 경고
         private bool warningActive = false;          // 경고 전송 상태
 
         // ===== 데이터 로깅 =====
