@@ -25,6 +25,11 @@ namespace adsmartcar
         private const float ANOMALY_THRESHOLD = 9.5f;
         private bool isDriving = false;
 
+        // ===== 이물질 지속 감지 → 서보 경고 =====
+        private int debrisCount = 0;                 // 이물질 연속 감지 횟수
+        private const int DEBRIS_TRIGGER = 20;       // 30회(약 3초) 지속 시 경고
+        private bool warningActive = false;          // 경고 전송 상태
+
         // ===== 데이터 로깅 =====
         private StreamWriter logWriter = null;
         private bool isRecording = false;
@@ -47,6 +52,8 @@ namespace adsmartcar
         private const byte CMD_DISTANCE = 0x20;
         private const byte CMD_CURRENT = 0x21;
         private const byte CMD_HEARTBEAT = 0x30;
+        private const byte CMD_WARN_ON = 0x40;
+        private const byte CMD_WARN_OFF = 0x41;
 
         private const float CURRENT_PER_DIFF = 0.0489f;
 
@@ -230,38 +237,50 @@ namespace adsmartcar
             }
         }
 
-        // ===== 이상 감지 + 유형 진단 (평균 + 표준편차) =====
+        // ===== 이상 감지 + 유형 진단 + 서보 경고 =====
         private void CheckAnomaly(int diff)
         {
             anomalyWindow.Enqueue(diff);
             while (anomalyWindow.Count > WINDOW_SIZE)
                 anomalyWindow.Dequeue();
 
-            isDriving = (lastCommand == "FORWARD" || lastCommand == "BACKWARD" ||
-                         lastCommand == "LEFT" || lastCommand == "RIGHT");
+            // 직진/후진일 때만 판단 (회전은 전류 특성이 달라 제외)
+            isDriving = (lastCommand == "FORWARD" || lastCommand == "BACKWARD");
 
-            lblAnomaly.Invoke(new Action(() =>
+            // 주행 중이 아니면 이물질 카운트 리셋 + 경고 해제
+            if (!isDriving)
             {
-                if (!isDriving)
-                {
-                    lblAnomaly.Text = "상태 : 정지";
-                    lblAnomaly.ForeColor = Color.Gray;
-                    return;
-                }
+                if (warningActive) SendWarnOff();
+                debrisCount = 0;
 
-                if (anomalyWindow.Count < WINDOW_SIZE)
+                lblAnomaly.Invoke(new Action(() =>
+                {
+                    lblAnomaly.Text = "상태 : 정지/회전";
+                    lblAnomaly.ForeColor = Color.Gray;
+                }));
+                return;
+            }
+
+            if (anomalyWindow.Count < WINDOW_SIZE)
+            {
+                lblAnomaly.Invoke(new Action(() =>
                 {
                     lblAnomaly.Text = "상태 : 측정 중...";
                     lblAnomaly.ForeColor = Color.Gray;
-                    return;
-                }
+                }));
+                return;
+            }
 
-                // 평균과 표준편차 계산
-                double avg = anomalyWindow.Average();
-                double variance = anomalyWindow.Select(x => (x - avg) * (x - avg)).Average();
-                double std = Math.Sqrt(variance);
+            // 평균 + 표준편차
+            double avg = anomalyWindow.Average();
+            double variance = anomalyWindow.Select(x => (x - avg) * (x - avg)).Average();
+            double std = Math.Sqrt(variance);
 
-                // 진단
+            // 진단
+            bool isDebris = false;
+
+            lblAnomaly.Invoke(new Action(() =>
+            {
                 if (avg <= ANOMALY_THRESHOLD)   // 정상
                 {
                     lblAnomaly.Text = $"상태 : 정상 (평균 {avg:F1}, 변동 {std:F1})";
@@ -278,6 +297,45 @@ namespace adsmartcar
                     lblAnomaly.ForeColor = Color.DarkOrange;
                 }
             }));
+
+            // 이물질 판정 여부 (경고 트리거용)
+            isDebris = (avg > 12.0 || std >= 2.8) && avg > ANOMALY_THRESHOLD;
+
+            // ===== 이물질 지속 감지 → 서보 경고 =====
+            if (isDebris)
+            {
+                debrisCount++;
+                if (debrisCount >= DEBRIS_TRIGGER && !warningActive)
+                {
+                    SendWarnOn();     // 3초 지속 → 경고 시작 (정지 + 서보 스윙)
+                }
+            }
+            else
+            {
+                // 이물질 아니면 카운트 리셋 + 경고 중이었으면 해제
+                debrisCount = 0;
+                if (warningActive) SendWarnOff();
+            }
+        }
+
+        // ===== 경고 명령 전송 =====
+        private void SendWarnOn()
+        {
+            SendRaw(CMD_WARN_ON);
+            warningActive = true;
+        }
+        private void SendWarnOff()
+        {
+            SendRaw(CMD_WARN_OFF);
+            warningActive = false;
+        }
+        private void SendRaw(byte cmd)
+        {
+            if (!port.IsOpen) return;
+            byte len = 0x00;
+            byte chk = (byte)(len ^ cmd);
+            byte[] packet = new byte[] { 0x02, len, cmd, chk, 0x03 };
+            port.Write(packet, 0, packet.Length);
         }
 
         private void UpdateLabel()
@@ -337,6 +395,10 @@ namespace adsmartcar
             port.Write(packet, 0, packet.Length);
 
             lastCommand = label;
+
+            // 사용자가 직접 조종하면 경고 상태 리셋
+            warningActive = false;
+            debrisCount = 0;
         }
 
         private void btnForward_Click(object sender, EventArgs e) { SendCommand(CMD_FORWARD, "FORWARD"); }
