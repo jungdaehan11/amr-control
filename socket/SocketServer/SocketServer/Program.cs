@@ -2,6 +2,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.IO.Ports;
+using System.Threading;
 
 namespace SocketServer
 {
@@ -14,12 +15,14 @@ namespace SocketServer
         const byte CMD_LEFT = 0x12;
         const byte CMD_RIGHT = 0x13;
         const byte CMD_STOP = 0x14;
+        const byte CMD_HEARTBEAT = 0x30;
 
-        static SerialPort robotPort;   // 로봇 블루투스
+        static SerialPort robotPort;
+        static bool running = true;      // 하트비트 스레드 제어
 
         static void Main(string[] args)
         {
-            // 1. 로봇 시리얼(블루투스) 연결
+            // 1. 로봇 시리얼 연결
             try
             {
                 robotPort = new SerialPort("COM8", 9600);
@@ -29,10 +32,15 @@ namespace SocketServer
             catch (Exception ex)
             {
                 Console.WriteLine("로봇 연결 실패: " + ex.Message);
-                Console.WriteLine("(로봇 없이 계속 - 명령 해석만 함)");
             }
 
-            // 2. socket 서버 시작
+            // 2. 하트비트 스레드 시작 (100ms마다 로봇에 전송)
+            Thread heartbeatThread = new Thread(HeartbeatLoop);
+            heartbeatThread.IsBackground = true;
+            heartbeatThread.Start();
+            Console.WriteLine("하트비트 시작 (100ms 주기)");
+
+            // 3. socket 서버 시작
             TcpListener server = new TcpListener(IPAddress.Any, 5000);
             server.Start();
             Console.WriteLine("브릿지 서버 시작 - 포트 5000 대기 중...");
@@ -58,6 +66,8 @@ namespace SocketServer
                 }
             }
 
+            // 정리
+            running = false;
             if (robotPort != null && robotPort.IsOpen) robotPort.Close();
             client.Close();
             server.Stop();
@@ -65,6 +75,28 @@ namespace SocketServer
             Console.ReadKey();
         }
 
+        // ===== 하트비트 스레드 =====
+        static void HeartbeatLoop()
+        {
+            while (running)
+            {
+                if (robotPort != null && robotPort.IsOpen)
+                {
+                    try
+                    {
+                        // 하트비트 패킷: STX LEN(0) CMD(0x30) CHK ETX
+                        byte len = 0x00;
+                        byte chk = (byte)(len ^ CMD_HEARTBEAT);
+                        byte[] hb = new byte[] { STX, len, CMD_HEARTBEAT, chk, ETX };
+                        robotPort.Write(hb, 0, hb.Length);
+                    }
+                    catch { }
+                }
+                Thread.Sleep(100);   // 100ms 대기
+            }
+        }
+
+        // ===== 패킷 조립기 =====
         static byte[] packetBuf = new byte[10];
         static int packetCount = 0;
         static bool receiving = false;
@@ -111,13 +143,11 @@ namespace SocketServer
             };
             Console.WriteLine($"[명령] {cmdName} (0x{cmd:X2})");
 
-            // ★ 로봇에 그대로 전달 (socket → 시리얼) ★
+            // 로봇에 명령 전달
             if (robotPort != null && robotPort.IsOpen)
             {
-                // 받은 패킷을 그대로 로봇에 재전송
                 byte[] packet = new byte[] { STX, len, cmd, chk, ETX };
                 robotPort.Write(packet, 0, packet.Length);
-                Console.WriteLine("  → 로봇에 전달됨");
             }
         }
     }
