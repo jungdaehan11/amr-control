@@ -361,3 +361,13 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# C++ / Visual Studio build output
+cpp/**/Debug/
+cpp/**/Release/
+cpp/**/x64/
+cpp/**/.vs/
+cpp/**/*.obj
+cpp/**/*.exe
+cpp/**/*.pdb
+cpp/**/*.ilk
