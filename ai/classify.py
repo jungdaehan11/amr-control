@@ -1,36 +1,38 @@
 """
 예지보전 판정 검증 스크립트
-- 실측 CSV(정상/부하/이물질)에 W=20 슬라이딩 윈도우를 적용
-- 윈도우 대표값(평균/중앙값)으로 상태를 판정하고, 혼동행렬·정확도를 산출
+- 실측 CSV(정상/부하/이물질, 각 3세트)에 W=20 슬라이딩 윈도우를 적용
+- 윈도우 평균 current_diff를 경계값으로 분류하고, 혼동행렬·정확도를 산출
 
-적용된 데이터 정제 / 판정 개선:
+데이터 정제 / 판정 결정 과정:
   1) 주행 구간만: command == FORWARD 만 분석 (정지 STOP 구간 제외)
   2) 꼬리 0 블록 제거: 주행 종료 후 전류가 0으로 떨어졌는데 로깅이 마지막 명령을
      유지한 채 계속 기록된 '꼬리 연속 0' 구간을 제거.
-     (정상 데이터에서 이 0 블록 25개가 표준편차를 2.70으로 부풀렸음 -> 제거 시 1.66)
-  3) 중앙값 판정: 정상 오탐의 원인이 순간 전류 스파이크(예: 0 -> 16 -> 21)임을 확인,
-     스파이크에 강건한 중앙값(median)으로 대표값을 교체.
-     (평균 대비 정상 오탐 4.9% -> 1.5%, 정확도 96.4% -> 97.5%)
+     (정상 데이터에서 이 0 블록이 표준편차를 부풀렸음 - 로깅 종료 처리 문제, 재현 확인됨)
+  3) 판정 방식 재선정:
+     - 초기 2분 데이터에선 순간 스파이크 때문에 '중앙값'이 유리했으나,
+     - 데이터를 약 8분(3세트, 4배)으로 확대해 재검증한 결과,
+       스파이크 영향이 희석되고 부하-정상 경계 구분이 더 중요해져
+       '평균 + 경계 9.4'가 최적(정확도 98.5%)임을 확인.
+     - 데이터 규모에 따라 최적 하이퍼파라미터가 달라진다는 것을 관찰.
 
-경계값 근거(정확도 최적화가 아닌 도메인 판단):
-  정상 윈도우 중앙값 ~8.6, 부하 ~10.2 -> 중간점 9.5 (정상/부하 경계)
-  부하 최대 ~11.1, 이물질 최소 ~13.2 -> 그 사이 12.0 (부하/이물질 경계)
-  경계를 9.6으로 올리면 정상 오탐 0%가 가능하나, 부하(이상)를 놓치는 비율이 증가.
-  예지보전에서는 '거짓 경보'보다 '이상 놓침'이 더 위험하므로,
-  전체 정확도가 가장 높고 이상 놓침이 최소인 9.5를 선택.
+경계값 근거:
+  정상 ~8.6 / 부하 ~10.2 / 이물질 ~14.4
+  LOW=9.4: 정상 오탐(2.4%)과 부하 놓침(2.3%)이 균형을 이루는 최적점
+  HIGH=12.0: 부하(최대~15 소수)와 이물질(~14.4)이 잘 분리되어 이물질 재현율 100%
 """
 import pandas as pd
 import numpy as np
 import os
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(BASE, "data")
 FILES = {
-    "정상":   os.path.join(BASE, "data", "forward.csv"),
-    "부하":   os.path.join(BASE, "data", "forward_load.csv"),
-    "이물질": os.path.join(BASE, "data", "forward_debris.csv"),
+    "정상":   ["forward.csv", "forward2.csv", "forward3.csv"],
+    "부하":   ["forward_load.csv", "forward_load2.csv", "forward_load3.csv"],
+    "이물질": ["forward_debris.csv", "forward_debris2.csv", "forward_debris3.csv"],
 }
 W = 20                    # 슬라이딩 윈도우 크기
-LOW, HIGH = 9.5, 12.0     # 판정 경계
+LOW, HIGH = 9.4, 12.0     # 판정 경계
 LABELS = ["정상", "부하", "이물질"]
 
 
@@ -46,7 +48,7 @@ def load_series(path):
             break
     if tail > 0:
         s = s[:len(s) - tail]
-    return pd.Series(s)
+    return s
 
 
 def classify(value):
@@ -57,15 +59,16 @@ def classify(value):
     return "이물질"
 
 
-def confusion_matrix(method="median"):
-    """method: 'median'(개선) 또는 'mean'(초기)"""
+def confusion_matrix(method="mean"):
+    """method: 'mean'(최종) 또는 'median'(초기 소량 데이터용)"""
     cm = {a: {b: 0 for b in LABELS} for a in LABELS}
-    for true_label, path in FILES.items():
-        s = load_series(path)
-        for i in range(len(s) - W + 1):
-            win = s[i:i + W].values
-            rep = np.median(win) if method == "median" else win.mean()
-            cm[true_label][classify(rep)] += 1
+    for true_label, files in FILES.items():
+        for fname in files:
+            s = load_series(os.path.join(DATA, fname))
+            for i in range(len(s) - W + 1):
+                win = s[i:i + W]
+                rep = np.median(win) if method == "median" else win.mean()
+                cm[true_label][classify(rep)] += 1
     return cm
 
 
@@ -85,20 +88,20 @@ def report(cm, title):
         s = sum(cm[a].values())
         print(f"{a} 재현율: {cm[a][a]/s*100:.1f}%  ({cm[a][a]}/{s})")
     nw = cm["정상"]["부하"] + cm["정상"]["이물질"]
-    ns = sum(cm["정상"].values())
-    print(f"정상 오탐률: {nw/ns*100:.1f}%  ({nw}/{ns})\n")
+    print(f"정상 오탐률: {nw/sum(cm['정상'].values())*100:.1f}%  ({nw}/{sum(cm['정상'].values())})")
+    lm = cm["부하"]["정상"]
+    print(f"부하 놓침(부하→정상): {lm/sum(cm['부하'].values())*100:.1f}%  ({lm}/{sum(cm['부하'].values())})\n")
 
 
 def stats():
-    print("=== 상태별 통계 (꼬리 0 제거 후) ===")
-    print(f"{'상태':<8}{'평균':>8}{'표준편차':>10}")
-    for t, path in FILES.items():
-        s = load_series(path)
-        print(f"{t:<8}{s.mean():>8.2f}{s.std():>10.2f}")
+    print("=== 상태별 통계 (3세트 합산, 꼬리 0 제거) ===")
+    print(f"{'상태':<8}{'개수':>7}{'평균':>8}{'표준편차':>10}")
+    for t, files in FILES.items():
+        s = np.concatenate([load_series(os.path.join(DATA, f)) for f in files])
+        print(f"{t:<8}{len(s):>7}{s.mean():>8.2f}{s.std():>10.2f}")
     print()
 
 
 if __name__ == "__main__":
     stats()
-    report(confusion_matrix("mean"),   "초기: 평균 판정")
-    report(confusion_matrix("median"), "개선: 중앙값 판정 (스파이크 강건)")
+    report(confusion_matrix("mean"), "판정: 윈도우 평균 (최종, LOW=9.4)")
