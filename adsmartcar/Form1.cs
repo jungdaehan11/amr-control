@@ -16,27 +16,47 @@ namespace adsmartcar
         private TcpClient tcpClient;
         private NetworkStream stream;
         private Thread receiveThread;
-        private bool connected = false;
+        private volatile bool connected = false;
         private const string BRIDGE_IP = "127.0.0.1";   // 브릿지 IP (같은 PC면 127.0.0.1)
         private const int BRIDGE_PORT = 5000;
 
-        // ===== 그래프 데이터 =====
+        // 송신 직렬화용 락.
+        // stream.Write() 는 UI 스레드(SendCommand)와 수신 스레드(SendWarnOn/Off) 양쪽에서
+        // 호출되므로, 락이 없으면 두 패킷이 섞여 나가 프로토콜이 깨질 수 있다.
+        private readonly object sendLock = new object();
+
+        // 판정 상태 보호용 락. anomalyWindow / debrisCount / warningActive / 구간 상태는
+        // 수신 스레드에서 갱신되고 UI 스레드(명령 전송)에서도 건드리므로 보호가 필요하다.
+        private readonly object stateLock = new object();
+
+        // ===== 그래프 데이터 (UI 스레드 전용) =====
         private Queue<int> currentData = new Queue<int>();
         private const int MAX_POINTS = 100;
-        private int lastDistance = 0;
+        private volatile int lastDistance = 0;
+        private volatile int lastDiff = 0;      // 최근 전류 원시값 (UpdateLabel 표시용)
 
         // ===== 이상 감지 =====
         private Queue<int> anomalyWindow = new Queue<int>();
         private const int WINDOW_SIZE = 20;
-        private bool isDriving = false;
 
-        // ===== 예지보전 판정 경계 =====
+        // 현재 누적 중인 '구동 구간'의 명령. 명령이 바뀌면 구간이 끊긴 것으로 보고
+        // 윈도우 버퍼를 비운다. (아래 CheckAnomaly 주석 참조)
+        private string segmentCommand = "STOP";
+
+        // 진단 대상 구간. 경계값이 FORWARD 실측 데이터만으로 도출됐으므로 FORWARD 한정.
+        // (회전은 양 바퀴가 역방향이라 전류가 구조적으로 높고, 후진은 실측 데이터가 없다)
+        private const string DIAG_COMMAND = "FORWARD";
+
+        // ===== 상태 진단 판정 경계 =====
         // 근거: 실측 FORWARD 구간 슬라이딩 윈도우(W=20) 분석 — analysis/classify.py
-        //   데이터: 정상/부하/이물질 각 3세트, 약 8분, 총 4,555 윈도우
+        //   데이터: 정상/부하/이물질 각 3세트, 약 8분, 총 3,376 윈도우
         //   윈도우 평균 분포 → 부하 8.95~11.35 / 이물질 13.20~15.65 (분리 구간 존재)
         //
-        // NORMAL_MAX(9.4): 정상 오탐(2.4%)과 부하 놓침(2.3%)이 균형을 이루는 지점.
+        // NORMAL_MAX(9.4): 정상 오탐과 부하 놓침이 균형을 이루는 지점.
         // DEBRIS_MIN(12.0): 부하 최대(11.35)와 이물질 최소(13.20) 사이. 이물질 재현율 100%.
+        //
+        // 성능: 전체 정확도 99.3% / Macro-F1 99.2% / 이물질 재현율 100%
+        //       세트 단위 3-fold 교차검증 99.57% (과적합 폭 0.10%p)
         //
         // 표준편차 조건(std >= 2.8)은 제거함:
         //   이물질은 평균만으로 이미 100% 검출되어 std가 추가로 건질 대상이 없고,
@@ -63,9 +83,9 @@ namespace adsmartcar
 
         // ===== 데이터 로깅 =====
         private StreamWriter logWriter = null;
-        private bool isRecording = false;
+        private volatile bool isRecording = false;
         private DateTime recordStartTime;
-        private string lastCommand = "STOP";
+        private volatile string lastCommand = "STOP";
         private int logCount = 0;
 
         // ===== 패킷 조립 =====
@@ -82,6 +102,8 @@ namespace adsmartcar
         private const byte CMD_STOP = 0x14;
         private const byte CMD_DISTANCE = 0x20;
         private const byte CMD_CURRENT = 0x21;
+        private const byte CMD_WARN_ON = 0x40;
+        private const byte CMD_WARN_OFF = 0x41;
 
         private const float CURRENT_PER_DIFF = 0.0489f;
 
@@ -134,6 +156,21 @@ namespace adsmartcar
                     if (tcpClient != null) tcpClient.Close();
                 }
                 catch { }
+
+                // 수신 스레드가 빠져나올 시간을 짧게 준다
+                if (receiveThread != null && receiveThread.IsAlive)
+                    receiveThread.Join(300);
+                receiveThread = null;
+
+                // 연결이 끊기면 진단 상태도 초기화 (끊긴 구간의 데이터가 다음 구간에 섞이지 않게)
+                lock (stateLock)
+                {
+                    anomalyWindow.Clear();
+                    segmentCommand = "STOP";
+                    debrisCount = 0;
+                    warningActive = false;
+                }
+
                 lblStatus.Text = "연결 안됨";
                 btnConnect.Text = "연결";
             }
@@ -199,10 +236,12 @@ namespace adsmartcar
             else if (cmd == CMD_CURRENT)
             {
                 int diff = data;
+                lastDiff = diff;
 
                 WriteLog(diff);
                 CheckAnomaly(diff);
 
+                // 그래프 버퍼는 UI 스레드에서만 만지도록 Invoke 안에서 처리한다.
                 lblSensor.Invoke(new Action(() =>
                 {
                     currentData.Enqueue(diff);
@@ -215,86 +254,142 @@ namespace adsmartcar
         }
 
         // ===== 이상 감지 + 유형 진단 + 서보 경고 =====
+        //
+        // ★ 구동 구간 단위 윈도우 (analysis/classify.py 의 load_segments() 와 동일한 개념)
+        //
+        //   한 번의 주행(FORWARD 연속 구간)이 끝나고 다음 주행이 시작되면, 두 주행은
+        //   서로 다른 구간이다. 하나의 윈도우가 두 구간에 걸치면 앞 주행의 끝과
+        //   다음 주행의 시작이 한 윈도우에 섞인다.
+        //
+        //   문제는 주행 시작마다 '모터 기동 돌입전류'가 나타난다는 점이다.
+        //   정지 상태의 DC 모터는 역기전력(E=k*omega)이 0이라 기동 순간 전류가 V/R 까지
+        //   치솟고, 회전이 붙으면서 정상값으로 내려온다.
+        //   실측에서 구간 시작값이 본체 평균의 최대 2.58배까지 튀었다.
+        //
+        //   따라서 명령이 바뀌면(=구간이 끊기면) 윈도우 버퍼를 비우고, 주행 구간에서만
+        //   값을 누적한다. 분석 결과 정상 오탐률 2.43% -> 0.41% 로 감소했다.
+        //
+        //   ※ 이 방식을 analysis/classify.py 와 반드시 동일하게 유지할 것.
+        //      한쪽만 바꾸면 검증 결과와 실제 앱 동작이 어긋난다.
         private void CheckAnomaly(int diff)
         {
-            anomalyWindow.Enqueue(diff);
-            while (anomalyWindow.Count > WINDOW_SIZE)
-                anomalyWindow.Dequeue();
+            string cmd = lastCommand;
+            bool diagnosable = (cmd == DIAG_COMMAND);
 
-            isDriving = (lastCommand == "FORWARD" || lastCommand == "BACKWARD");
+            bool filling;          // 아직 윈도우가 다 안 참
+            double avg = 0, std = 0;
+            MotorState state = MotorState.Normal;
+            bool needWarnOn = false, needWarnOff = false;
 
-            if (!isDriving)
+            // --- 상태 갱신은 락 안에서, UI 갱신/송신은 락 밖에서 ---
+            // (락을 쥔 채 Invoke 하면 UI 스레드와 교착될 수 있다)
+            lock (stateLock)
             {
-                if (warningActive) SendWarnOff();
-                debrisCount = 0;
-                lblAnomaly.Invoke(new Action(() =>
+                // ★ 구간이 바뀌었으면 버퍼를 비운다
+                if (cmd != segmentCommand)
                 {
-                    lblAnomaly.Text = "상태 : 정지/회전";
-                    lblAnomaly.ForeColor = Color.Gray;
-                }));
-                return;
-            }
-
-            if (anomalyWindow.Count < WINDOW_SIZE)
-            {
-                lblAnomaly.Invoke(new Action(() =>
-                {
-                    lblAnomaly.Text = "상태 : 측정 중...";
-                    lblAnomaly.ForeColor = Color.Gray;
-                }));
-                return;
-            }
-
-            double avg = anomalyWindow.Average();
-            double variance = anomalyWindow.Select(x => (x - avg) * (x - avg)).Average();
-            double std = Math.Sqrt(variance);
-
-            MotorState state = Classify(avg);
-
-            lblAnomaly.Invoke(new Action(() =>
-            {
-                switch (state)
-                {
-                    case MotorState.Normal:
-                        lblAnomaly.Text = $"상태 : 정상 (평균 {avg:F1}, 변동 {std:F1})";
-                        lblAnomaly.ForeColor = Color.Green;
-                        break;
-
-                    case MotorState.Overload:
-                        lblAnomaly.Text = $"상태 : ⚠ 부하 이상 (평균 {avg:F1}, 변동 {std:F1})";
-                        lblAnomaly.ForeColor = Color.DarkOrange;
-                        break;
-
-                    case MotorState.Debris:
-                        lblAnomaly.Text = $"상태 : ⚠ 이물질/마찰 의심 (평균 {avg:F1}, 변동 {std:F1})";
-                        lblAnomaly.ForeColor = Color.Red;
-                        break;
+                    anomalyWindow.Clear();
+                    segmentCommand = cmd;
+                    debrisCount = 0;
+                    if (warningActive) needWarnOff = true;
                 }
-            }));
 
-            if (state == MotorState.Debris)
+                if (!diagnosable)
+                {
+                    // 진단 대상 구간이 아니면 값을 누적하지 않는다.
+                    // (정지/회전 구간의 값이 다음 주행 윈도우에 섞이는 것을 막는다)
+                    if (warningActive) needWarnOff = true;
+                    debrisCount = 0;
+                }
+                else
+                {
+                    anomalyWindow.Enqueue(diff);
+                    while (anomalyWindow.Count > WINDOW_SIZE)
+                        anomalyWindow.Dequeue();
+                }
+
+                filling = anomalyWindow.Count < WINDOW_SIZE;
+
+                if (diagnosable && !filling)
+                {
+                    avg = anomalyWindow.Average();
+                    double variance = anomalyWindow.Select(x => (x - avg) * (x - avg)).Average();
+                    std = Math.Sqrt(variance);
+                    state = Classify(avg);
+
+                    if (state == MotorState.Debris)
+                    {
+                        debrisCount++;
+                        if (debrisCount >= DEBRIS_TRIGGER && !warningActive)
+                            needWarnOn = true;
+                    }
+                    else
+                    {
+                        debrisCount = 0;
+                        if (warningActive) needWarnOff = true;
+                    }
+                }
+            }
+
+            // --- 락 밖: 서보 경고 송신 ---
+            if (needWarnOn) SendWarnOn();
+            else if (needWarnOff) SendWarnOff();
+
+            // --- 락 밖: UI 갱신 ---
+            string text;
+            Color color;
+            if (!diagnosable)
             {
-                debrisCount++;
-                if (debrisCount >= DEBRIS_TRIGGER && !warningActive)
-                    SendWarnOn();
+                text = "상태 : 정지/회전";
+                color = Color.Gray;
+            }
+            else if (filling)
+            {
+                text = "상태 : 측정 중...";
+                color = Color.Gray;
             }
             else
             {
-                debrisCount = 0;
-                if (warningActive) SendWarnOff();
+                switch (state)
+                {
+                    case MotorState.Overload:
+                        text = $"상태 : ⚠ 부하 이상 (평균 {avg:F1}, 변동 {std:F1})";
+                        color = Color.DarkOrange;
+                        break;
+                    case MotorState.Debris:
+                        text = $"상태 : ⚠ 이물질/마찰 의심 (평균 {avg:F1}, 변동 {std:F1})";
+                        color = Color.Red;
+                        break;
+                    default:
+                        text = $"상태 : 정상 (평균 {avg:F1}, 변동 {std:F1})";
+                        color = Color.Green;
+                        break;
+                }
             }
+
+            try
+            {
+                lblAnomaly.Invoke(new Action(() =>
+                {
+                    lblAnomaly.Text = text;
+                    lblAnomaly.ForeColor = color;
+                }));
+            }
+            catch { }   // 폼이 닫히는 중이면 무시
         }
 
         private void SendWarnOn()
         {
-            SendRaw(0x40);
-            warningActive = true;
+            SendRaw(CMD_WARN_ON);
+            lock (stateLock) { warningActive = true; }
         }
+
         private void SendWarnOff()
         {
-            SendRaw(0x41);
-            warningActive = false;
+            SendRaw(CMD_WARN_OFF);
+            lock (stateLock) { warningActive = false; }
         }
+
         private void SendRaw(byte cmd)
         {
             if (!connected || stream == null) return;
@@ -303,7 +398,11 @@ namespace adsmartcar
                 byte len = 0x00;
                 byte chk = (byte)(len ^ cmd);
                 byte[] packet = new byte[] { STX, len, cmd, chk, ETX };
-                stream.Write(packet, 0, packet.Length);
+                // UI 스레드와 수신 스레드가 동시에 쓰지 못하도록 직렬화
+                lock (sendLock)
+                {
+                    stream.Write(packet, 0, packet.Length);
+                }
             }
             catch { }
         }
@@ -334,43 +433,61 @@ namespace adsmartcar
             {
                 isRecording = false;
                 btnRecord.Text = "기록 시작";
-                if (logWriter != null)
+                lock (sendLock)     // logWriter 접근 직렬화
                 {
-                    logWriter.Flush();
-                    logWriter.Close();
-                    logWriter = null;
+                    if (logWriter != null)
+                    {
+                        logWriter.Flush();
+                        logWriter.Close();
+                        logWriter = null;
+                    }
                 }
                 MessageBox.Show("기록 완료: " + logCount + "줄 저장됨");
             }
         }
 
+        // 주의(알려진 한계): command 열에는 'PC가 마지막으로 보낸 명령'이 기록된다.
+        // 로봇이 워치독으로 자율 정지하거나 주행이 끝나도 PC는 그것을 모르므로,
+        // 전류가 0인데 command 가 FORWARD 로 남는 '꼬리 0 블록'이 생긴다.
+        // 분석 쪽(analysis/classify.py)에서 이 구간을 제거하는 전처리로 대응하고 있으며,
+        // 근본 해결은 로봇이 실제 구동 상태를 패킷으로 보고하도록 프로토콜을 넓히는 것이다.
         private void WriteLog(int diff)
         {
-            if (!isRecording || logWriter == null) return;
+            if (!isRecording) return;
             try
             {
-                long elapsed = (long)(DateTime.Now - recordStartTime).TotalMilliseconds;
-                float amps = diff * CURRENT_PER_DIFF;
-                logWriter.WriteLine(elapsed + "," + diff + "," + amps.ToString("F3") + "," + lastDistance + "," + lastCommand);
-                logCount++;
+                lock (sendLock)
+                {
+                    if (logWriter == null) return;
+                    long elapsed = (long)(DateTime.Now - recordStartTime).TotalMilliseconds;
+                    float amps = diff * CURRENT_PER_DIFF;
+                    logWriter.WriteLine(elapsed + "," + diff + "," + amps.ToString("F3") + ","
+                                        + lastDistance + "," + lastCommand);
+                    logCount++;
+                }
             }
             catch { }
         }
 
         private void UpdateLabel()
         {
-            int[] arr = currentData.ToArray();
-            int diff = arr.Length > 0 ? arr[arr.Length - 1] : 0;
+            // currentData(그래프 버퍼)는 UI 스레드 전용이므로 여기서 만지지 않는다.
+            // 최근 값은 lastDiff 로 따로 들고 있다.
+            int diff = lastDiff;
             float amps = diff * CURRENT_PER_DIFF;
 
             string distText = (lastDistance == 0) ? "-- cm" : lastDistance + " cm";
             string text = "거리 : " + distText + "    전류 : " + amps.ToString("F2") + " A";
             if (isRecording) text += "    [REC " + logCount + "]";
 
-            lblSensor.Invoke(new Action(() =>
+            try
             {
-                lblSensor.Text = text;
-            }));
+                lblSensor.Invoke(new Action(() =>
+                {
+                    lblSensor.Text = text;
+                }));
+            }
+            catch { }   // 폼이 닫히는 중이면 무시
         }
 
         private void Panel1_Paint(object sender, PaintEventArgs e)
@@ -408,15 +525,25 @@ namespace adsmartcar
                 lblStatus.Text = "먼저 연결하세요";
                 return;
             }
+
+            // 경고 중이었다면 실제로 서보를 내린 뒤 상태를 초기화한다.
+            bool wasWarning;
+            lock (stateLock) { wasWarning = warningActive; }
+            if (wasWarning) SendWarnOff();
+
             try
             {
                 byte len = 0x00;
                 byte chk = (byte)(len ^ cmd);
                 byte[] packet = new byte[] { STX, len, cmd, chk, ETX };
-                stream.Write(packet, 0, packet.Length);
+                lock (sendLock)
+                {
+                    stream.Write(packet, 0, packet.Length);
+                }
+
                 lastCommand = label;
-                warningActive = false;
-                debrisCount = 0;
+                // 실제 버퍼 비우기는 CheckAnomaly 가 명령 변화를 감지해 처리한다.
+                // (판정 상태를 한 곳에서만 바꾸도록 유지)
             }
             catch (Exception ex)
             {
