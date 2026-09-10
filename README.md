@@ -295,12 +295,19 @@
 
 | 단계 | 내용 | 결과물 |
 |---|---|---|
-| **1. 콘솔** | 커스텀 패킷 프로토콜(빌드·파싱·XOR 체크섬)을 C++로 이식 | `cpp/PacketTest` |
-| **2. Winsock** | TCP 서버/클라이언트로 실제 패킷 송수신 (에코 통신) | `cpp/EchoServer`, `cpp/EchoClient` |
-| **3. MFC GUI** | 대화상자 기반 관제 — 버튼 클릭 → 패킷 전송 → 에코 수신·로그 | `cpp/MfcControl` |
+| **1. 콘솔** | 커스텀 패킷 프로토콜(빌드·파싱·XOR 체크섬)을 C++로 이식 | `cpp/MfcPorting/PacketTest` |
+| **2. Winsock** | TCP 서버/클라이언트로 실제 패킷 송수신 (에코 통신) | `cpp/MfcPorting/EchoServer`, `EchoClient` |
+| **3. MFC GUI** | 대화상자 기반 관제 — 버튼 클릭 → 패킷 전송 → 에코 수신·로그 | `cpp/MfcPorting/MfcControl` |
 
 - **패킷 프로토콜 재사용:** C#에서 설계한 `[STX][LEN][CMD][DATA][CHK][ETX]` 구조를
-  C++로 포팅. `Packet.h`/`Packet.cpp`로 분리하여 콘솔·서버·GUI 세 프로젝트에서 공통 사용
+  C++로 포팅. `Packet.h`/`Packet.cpp`를 `cpp/MfcPorting/common/` **한 곳에 두고
+  네 프로젝트가 상대경로로 참조**한다. 각 `.vcxproj`는 `..\common\Packet.cpp`를 컴파일하고
+  추가 포함 디렉터리로 `$(ProjectDir)..\common`을 사용한다.
+
+  > 초기에는 각 프로젝트 폴더에 `Packet.h/cpp` 사본이 하나씩, 총 4벌이 들어 있었다.
+  > 내용은 같았지만 **한 곳을 고치면 나머지 세 곳이 조용히 어긋나는 구조**였고,
+  > 이는 이 프로젝트에서 이미 한 번 겪은 "분석 코드와 제품 코드가 따로 노는" 문제와
+  > 같은 종류다. 파일을 하나로 합쳐 구조적으로 어긋날 수 없게 했다.
 - **Winsock 소켓 통신:** C#의 `System.Net.Sockets`에 대응하는 Winsock2 API로
   초기화·연결·송수신·정리 전 과정 직접 구현
 - **MFC 대화상자 관제:** 방향 제어 버튼(전/후/좌/우/정지) → CMD 패킷 전송,
@@ -348,7 +355,9 @@
 ├── socket/          # TCP/IP 원격 관제 (C#)
 │   ├── SocketServer/  #   브릿지 (socket ↔ 시리얼)
 │   └── SocketClient/  #   관제 클라이언트 (콘솔 프로토타입)
-├── cpp/             # C++/MFC 포팅
+├── cpp/MfcPorting/  # C++/MFC 포팅 (Visual Studio 솔루션 하나, 4개 프로젝트)
+│   ├── PacketTest.sln
+│   ├── common/        #   Packet.h / Packet.cpp — 네 프로젝트가 공유
 │   ├── PacketTest/    #   1단계 — 콘솔 패킷 빌더/파서
 │   ├── EchoServer/    #   2단계 — Winsock 서버
 │   ├── EchoClient/    #   2단계 — Winsock 클라이언트

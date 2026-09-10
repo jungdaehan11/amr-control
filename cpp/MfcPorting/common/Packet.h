@@ -1,4 +1,4 @@
-// Packet.h - AMR ÆÐÅ¶ ÇÁ·ÎÅäÄÝ ¼±¾ð
+ï»¿// Packet.h - AMR íŒ¨í‚· í”„ë¡œí† ì½œ ì„ ì–¸
 #pragma once
 #include <vector>
 #include <cstdint>

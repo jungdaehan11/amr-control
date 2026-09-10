@@ -1,16 +1,16 @@
-// Packet.cpp - AMR ÆĞÅ¶ ÇÁ·ÎÅäÄİ ±¸Çö
+ï»¿// Packet.cpp - AMR íŒ¨í‚· í”„ë¡œí† ì½œ êµ¬í˜„
 #include "Packet.h"
 #include <iostream>
 #include <iomanip>
 
-// XOR Ã¼Å©¼¶: CMD + DATA ÀüÃ¼
+// XOR ì²´í¬ì„¬: CMD + DATA ì „ì²´
 uint8_t calcChecksum(uint8_t cmd, const std::vector<uint8_t>& data) {
     uint8_t chk = cmd;
     for (uint8_t b : data) chk ^= b;
     return chk;
 }
 
-// ÆĞÅ¶ Á¶¸³: [STX][LEN][CMD][DATA...][CHK][ETX]
+// íŒ¨í‚· ì¡°ë¦½: [STX][LEN][CMD][DATA...][CHK][ETX]
 std::vector<uint8_t> buildPacket(uint8_t cmd, const std::vector<uint8_t>& data) {
     std::vector<uint8_t> pkt;
     pkt.push_back(STX);
@@ -22,7 +22,7 @@ std::vector<uint8_t> buildPacket(uint8_t cmd, const std::vector<uint8_t>& data) 
     return pkt;
 }
 
-// ÆĞÅ¶ °ËÁõ/ºĞÇØ
+// íŒ¨í‚· ê²€ì¦/ë¶„í•´
 ParseResult parsePacket(const std::vector<uint8_t>& pkt) {
     if (pkt.size() < 5)     return { false, 0, {}, "too short" };
     if (pkt.front() != STX) return { false, 0, {}, "no STX" };
@@ -42,7 +42,7 @@ ParseResult parsePacket(const std::vector<uint8_t>& pkt) {
     return { true, cmd, data, "ok" };
 }
 
-// µğ¹ö±× Ãâ·Â
+// ë””ë²„ê·¸ ì¶œë ¥
 void printHex(const std::vector<uint8_t>& pkt) {
     std::cout << std::hex << std::uppercase << std::setfill('0');
     for (uint8_t b : pkt)
