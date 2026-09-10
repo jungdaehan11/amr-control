@@ -18,12 +18,12 @@
     <ClCompile Include="PacketTest.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="Packet.cpp">
+    <ClCompile Include="..\common\Packet.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Packet.h">
+    <ClInclude Include="..\common\Packet.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
   </ItemGroup>
