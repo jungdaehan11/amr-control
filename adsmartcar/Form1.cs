@@ -28,8 +28,33 @@ namespace adsmartcar
         // ===== 이상 감지 =====
         private Queue<int> anomalyWindow = new Queue<int>();
         private const int WINDOW_SIZE = 20;
-        private const float ANOMALY_THRESHOLD = 9.5f;
         private bool isDriving = false;
+
+        // ===== 예지보전 판정 경계 =====
+        // 근거: 실측 FORWARD 구간 슬라이딩 윈도우(W=20) 분석 — analysis/classify.py
+        //   데이터: 정상/부하/이물질 각 3세트, 약 8분, 총 4,555 윈도우
+        //   윈도우 평균 분포 → 부하 8.95~11.35 / 이물질 13.20~15.65 (분리 구간 존재)
+        //
+        // NORMAL_MAX(9.4): 정상 오탐(2.4%)과 부하 놓침(2.3%)이 균형을 이루는 지점.
+        // DEBRIS_MIN(12.0): 부하 최대(11.35)와 이물질 최소(13.20) 사이. 이물질 재현율 100%.
+        //
+        // 표준편차 조건(std >= 2.8)은 제거함:
+        //   이물질은 평균만으로 이미 100% 검출되어 std가 추가로 건질 대상이 없고,
+        //   변동이 큰 부하 구간을 이물질로 오분류시켜 불필요한 자동 정지를 유발했다.
+        //   제거 결과 전체 정확도 94.3% → 98.5%, 부하 재현율 83.6% → 97.7%.
+        //   (std는 운전자 참고용으로 화면에만 표시)
+        private const double NORMAL_MAX = 9.4;    // 정상 / 부하 경계
+        private const double DEBRIS_MIN = 12.0;   // 부하 / 이물질 경계
+
+        private enum MotorState { Normal, Overload, Debris }
+
+        // 판정 로직 단일 진입점. analysis/classify.py의 classify()와 동일한 규칙을 유지한다.
+        private static MotorState Classify(double windowMean)
+        {
+            if (windowMean < NORMAL_MAX) return MotorState.Normal;
+            if (windowMean < DEBRIS_MIN) return MotorState.Overload;
+            return MotorState.Debris;
+        }
 
         // ===== 이물질 지속 감지 → 서보 경고 =====
         private int debrisCount = 0;
@@ -224,28 +249,30 @@ namespace adsmartcar
             double variance = anomalyWindow.Select(x => (x - avg) * (x - avg)).Average();
             double std = Math.Sqrt(variance);
 
+            MotorState state = Classify(avg);
+
             lblAnomaly.Invoke(new Action(() =>
             {
-                if (avg <= ANOMALY_THRESHOLD)
+                switch (state)
                 {
-                    lblAnomaly.Text = $"상태 : 정상 (평균 {avg:F1}, 변동 {std:F1})";
-                    lblAnomaly.ForeColor = Color.Green;
-                }
-                else if (avg > 12.0 || std >= 2.8)
-                {
-                    lblAnomaly.Text = $"상태 : ⚠ 이물질/마찰 의심 (평균 {avg:F1}, 변동 {std:F1})";
-                    lblAnomaly.ForeColor = Color.Red;
-                }
-                else
-                {
-                    lblAnomaly.Text = $"상태 : ⚠ 부하 이상 (평균 {avg:F1}, 변동 {std:F1})";
-                    lblAnomaly.ForeColor = Color.DarkOrange;
+                    case MotorState.Normal:
+                        lblAnomaly.Text = $"상태 : 정상 (평균 {avg:F1}, 변동 {std:F1})";
+                        lblAnomaly.ForeColor = Color.Green;
+                        break;
+
+                    case MotorState.Overload:
+                        lblAnomaly.Text = $"상태 : ⚠ 부하 이상 (평균 {avg:F1}, 변동 {std:F1})";
+                        lblAnomaly.ForeColor = Color.DarkOrange;
+                        break;
+
+                    case MotorState.Debris:
+                        lblAnomaly.Text = $"상태 : ⚠ 이물질/마찰 의심 (평균 {avg:F1}, 변동 {std:F1})";
+                        lblAnomaly.ForeColor = Color.Red;
+                        break;
                 }
             }));
 
-            bool isDebris = (avg > 12.0 || std >= 2.8) && avg > ANOMALY_THRESHOLD;
-
-            if (isDebris)
+            if (state == MotorState.Debris)
             {
                 debrisCount++;
                 if (debrisCount >= DEBRIS_TRIGGER && !warningActive)
